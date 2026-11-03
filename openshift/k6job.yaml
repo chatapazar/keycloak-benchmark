@@ -1,0 +1,58 @@
+# k6-load-test-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: k6-keycloak-load-test
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: k6-load-test
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: k6
+          image: grafana/k6:latest
+          command:
+            - k6
+            - run
+            - /scripts/keycloak-login-test.js
+            - --out
+            - json=/results/output.json
+          env:
+            - name: KEYCLOAK_URL
+              value: "http://keycloak-service.test.svc.cluster.local:8080"
+            - name: KEYCLOAK_URL_HEALTH
+              value: "http://keycloak-service.test.svc.cluster.local:9000"  
+            - name: REALM
+              value: "test"
+            - name: CLIENT_ID
+              value: "test-client"
+            - name: TOTAL_USERS
+              value: "10000"
+            - name: VIRTUAL_USERS
+              value: "300"
+            - name: DO_LOGOUT
+              value: "false"
+
+          resources:
+            requests:
+              cpu: "4"
+              memory: "4Gi"
+            limits:
+              cpu: "4"
+              memory: "4Gi"
+
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+            - name: results
+              mountPath: /results
+
+      volumes:
+        - name: scripts
+          configMap:
+            name: k6-test-script
+        - name: results
+          emptyDir: {}

@@ -1,0 +1,58 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-admin-secret
+type: Opaque
+stringData:
+  username: admin
+  password: "admin"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-db-secret
+type: Opaque
+stringData:
+  username: keycloak
+  password: "keycloak"
+---
+apiVersion: k8s.keycloak.org/v2beta1
+kind: Keycloak
+metadata:
+  name: keycloak
+spec:
+  instances: 1
+
+  db:
+    vendor: postgres
+    host: postgresql.test.svc.cluster.local
+    port: 5432
+    database: keycloak
+    usernameSecret:
+      name: keycloak-db-secret
+      key: username
+    passwordSecret:
+      name: keycloak-db-secret
+      key: password
+    poolInitialSize: 20
+    poolMinSize: 20
+    poolMaxSize: 50
+
+  resources:
+    requests:
+      cpu: "4"
+      memory: "4Gi"
+    limits:
+      cpu: "4"
+      memory: "4Gi"
+
+  hostname:
+    hostname: test-sso.apps.ocp.fhmj9.sandbox3550.opentlc.com
+    strict: false
+    strictBackchannel: false
+  http:
+    httpEnabled: true
+  ingress:
+    enabled: true
+  proxy:
+    headers: xforwarded

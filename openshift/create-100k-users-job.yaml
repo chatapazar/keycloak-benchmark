@@ -1,0 +1,121 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: import-script-cm
+data:
+  import.py: |
+    import asyncio
+    import os
+    import aiohttp
+
+    KEYCLOAK_URL = os.getenv("KEYCLOAK_URL", "http://keycloak-service.test.svc.cluster.local:8080")
+    REALM = os.getenv("TARGET_REALM", "test")
+    ADMIN_USER = os.getenv("ADMIN_USER", "temp-admin")
+    ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "9b5e570c04e54b16a1c38b23ae866481")
+
+    TOTAL_USERS = 100000
+    CONCURRENCY_LIMIT = 50  # จำนวนยิงพร้อมกันต่อช่วงเวลา
+
+    async def get_admin_token(session):
+        url = f"{KEYCLOAK_URL}/realms/master/protocol/openid-connect/token"
+        payload = {
+            'client_id': 'admin-cli',
+            'username': ADMIN_USER,
+            'password': ADMIN_PASSWORD,
+            'grant_type': 'password'
+        }
+        async with session.post(url, data=payload) as resp:
+            data = await resp.json()
+            return data['access_token']
+
+    async def create_user(session, token, semaphore, user_index):
+        async with semaphore:
+            url = f"{KEYCLOAK_URL}/admin/realms/{REALM}/users"
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            }
+            user_payload = {
+                "username": f"user{user_index}",
+                "email": f"user{user_index}@example.com",
+                "enabled": True,
+                "firstName": f"First{user_index}",
+                "lastName": f"Last{user_index}",
+                "credentials": [{
+                    "type": "password",
+                    "value": f"user{user_index}-password",
+                    "temporary": False
+                }]
+            }
+            try:
+                async with session.post(url, json=user_payload, headers=headers) as resp:
+                    if resp.status not in (201, 409): # 409 = User มีอยู่แล้ว
+                        print(f"Failed to create user_{user_index}: {resp.status}")
+            except Exception as e:
+                print(f"Error creating user_{user_index}: {e}")
+
+    async def main():
+        async with aiohttp.ClientSession() as session:
+            print("Getting Admin Token...")
+            token = await get_admin_token(session)
+            
+            semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
+            tasks = []
+            print(f"Starting import of {TOTAL_USERS} users...")
+            
+            for i in range(1, TOTAL_USERS + 1):
+                tasks.append(create_user(session, token, semaphore, i))
+                
+                # Refresh Token ทุกๆ 1,000 users เพื่อป้องกัน Token หมดอายุ
+                if i % 1000 == 0:
+                    token = await get_admin_token(session)
+                    
+            await asyncio.gather(*tasks)
+            print("Bulk User Creation Completed!")
+
+    if __name__ == "__main__":
+        asyncio.run(main())
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: keycloak-bulk-user-creator
+spec:
+  template:
+    spec:
+      containers:
+      - name: python-runner
+        image: registry.redhat.io/ubi9/python-314:9.8-1784813809
+        command: ["sh", "-c", "pip install aiohttp && python /scripts/import.py"]
+        env:
+        # เปลี่ยน my-keycloak เป็นชื่อ Service ของคุณ
+        - name: TARGET_REALM
+          value: "test"
+        - name: KEYCLOAK_URL
+          value: "http://keycloak-service.test.svc.cluster.local:8080"
+        # ดึง Admin Username/Password จาก Secret ที่ Operator สร้างให้
+        - name: ADMIN_USER
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-initial-admin
+              key: username
+        - name: ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-initial-admin
+              key: password
+        volumeMounts:
+        - name: script-vol
+          mountPath: /scripts
+        resources:
+          requests:
+            cpu: "8"
+            memory: "8Gi"
+          limits:
+            cpu: "8"
+            memory: "8Gi"
+      restartPolicy: Never
+      volumes:
+      - name: script-vol
+        configMap:
+          name: import-script-cm
