@@ -1,2 +1,1 @@
 # keycloak-benchmark
-# keycloak-benchmark
